@@ -1,0 +1,1005 @@
+---
+title: "IBM Applied Data Science with R"
+author: "Arif"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: 
+  html_document: 
+    theme : cerulean
+    highlight: kate
+    toc: true
+    toc_float: yes
+    
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r include = FALSE, message=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(parsnip)
+library(corrplot)
+library(glmnet)
+```
+
+
+#  Welcome!
+In this section, we will explore several methods to see if certain characteristics or features can be used to predict arrival delay minutes. The main question we will be trying to answer throughout this lab is: what are the main characteristics which have the most impact on how long a flight arrives late?
+Table of Contents
+1. Analyzing Individual Feature Patterns using Visualization
+2. Descriptive Statistical Analysis
+3. Basics of Grouping
+4. Correlation and Causation
+5. ANOVA
+
+```{r }
+# url where the data is located
+# url <- "https://dax-cdn.cdn.appdomain.cloud/dax-airline/1.0.1/lax_to_jfk.tar.gz"
+# download the file
+# download.file(url, destfile = "lax_to_jfk.tar.gz")
+
+# untar the file so we can get the csv only
+# untar("lax_to_jfk.tar.gz", tar = "internal")
+
+# read_csv only 
+sub_airline <- read.csv("sub_airline.csv")
+
+View(sub_airline)
+
+# Check dimensions of the dataset
+dim(sub_airline)
+
+# counting missing values
+sub_airline %>%
+  summarize(count = sum(is.na(CarrierDelay)))
+```
+
+
+```{r}
+drop_na_cols <- sub_airline %>% select(-DivDistance, -DivArrDelay)
+dim(drop_na_cols)
+head(drop_na_cols)
+
+# Drop the missing values
+drop_na_rows <- drop_na_cols %>% drop_na(CarrierDelay)
+dim(drop_na_rows)
+head(drop_na_rows)
+```
+
+
+```{r}
+# Replace the missing values in five columns
+replace_na <- drop_na_rows %>% replace_na(list(CarrierDelay = 0,
+                                              WeatherDelay = 0,
+                                              NASDelay = 0,
+                                              SecurityDelay = 0,
+                                              LateAircraftDelay = 0))
+head(replace_na)
+```
+
+
+```{r}
+sub_airline %>% 
+    summarize_all(class) %>% 
+    gather(variable, class)
+```
+
+
+Let's re-format the FlightDate field into three separate fields (year, month, day) using separate().
+```{r}
+date_airline <- replace_na %>% 
+    separate(FlightDate, sep = "-", into = c("year", "month", "day"))
+
+head(date_airline)
+```
+
+**Binning**
+
+Binning is a process of transforming continuous numerical variables into discrete categorical 'bins', for grouped analysis.
+
+Using binning, we categorize arrival delays into four bins by quartiles. Quartiles refer to the boundaries that divide observations into four defined intervals. They are often determined based on the values of data points and how they are compared with the rest of the dataset. In the actual airline dataset, "ArrDelay" is a numerical variable ranging from -73 to 682, it has 2855 unique values. We can categorize them into 4 bins. Can we rearrange them into four ‘bins' to simplify analysis?
+
+We will use the tidyverse method mutate(quantile_rank = ntile()) to segment the "ArrDelay" column into 4 bins.
+
+```{r}
+ggplot(data = sub_airline, mapping = aes(x = ArrDelay)) +
+  geom_histogram(bins = 100, color = "white", fill = "red") +
+  coord_cartesian(xlim = c(-73, 682))
+
+binning <- sub_airline %>%
+      mutate(quantile_rank = ntile(sub_airline$ArrDelay,4))
+
+head(binning)
+```
+
+
+```{r}
+sub_airline %>%
+  mutate(dummy = 1) %>% # column with single value
+  spread(
+    key = Reporting_Airline, # column to spread
+    value = dummy,
+    fill = 0) %>%
+  slice(1:5)
+
+sub_airline %>% # start with data
+   mutate(Reporting_Airline = factor(Reporting_Airline,
+                                     labels = c("AA", "AS", "DL", "UA", "B6", "PA (1)", "HP", "TW", "VX")))%>%
+  ggplot(aes(Reporting_Airline)) +
+  stat_count(width = 0.5) +
+  labs(x = "Number of data points in each airline")
+```
+
+
+## 1. Analyzing Individual Feature Patterns using Visualization
+
+To create boxplots, the main function to use is geom_boxplot(). In the below code we also use additional functions primarly to customize the aesthetics of the plot. You can check out the Data Visualization Course in R if you want to know more about customizing plots with ggplot.
+
+**geom_boxplot():** The boxplot compactly displays the distribution of a continuous variable. It visualises five summary statistics (the median, two hinges and two whiskers), and all "outlying" points individually.
+
+**geom_jitter():** The jitter geom is a convenient shortcut for geom_point(position = "jitter"). It adds a small amount of random variation to the location of each point, and is a useful way of handling overplotting caused by discreteness in smaller datasets.
+
+**coord_cartesian():** The Cartesian coordinate system is the most familiar, and common, type of coordinate system. Setting limits on the coordinate system will zoom the plot (like you're looking at it with a magnifying glass), and will not change the underlying data like setting limits on a scale will.
+
+Below shows the distribution of arrival delays for each reporting airline. So here, ArrDelay is the numerica data.
+
+
+```{r echo=FALSE}
+# Boxplot
+ggplot(data = sub_airline, mapping = aes(x = Reporting_Airline, y = ArrDelay)) +
+  geom_boxplot(fill = "bisque",color = "black", alpha = 0.3) +
+  geom_jitter(aes(color = 'blue'), alpha=0.2) +
+  labs(x = "Airline") +
+  ggtitle("Arrival Delays by Airline") +
+  guides(color = FALSE) +
+  theme_minimal() +
+  coord_cartesian(ylim = quantile(sub_airline$ArrDelay, c(0, 0.99)))
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+```{r}
+# Write your code below and press Shift+Enter to execute 
+cor(sub_airline$DepDelayMinutes, sub_airline$ArrDelayMinutes)
+
+# DepDelayMinutes as potential predictor variable of ArrDelayMinutes
+ggplot(data = sub_airline, mapping = aes(x = DepDelayMinutes, y = ArrDelayMinutes)) +
+    geom_point() + 
+    geom_smooth(method = "lm", na.rm = TRUE)
+
+cor(sub_airline$WeatherDelay, sub_airline$ArrDelayMinutes, use = "complete.obs")
+ggplot(data = sub_airline, mapping = aes(x = WeatherDelay, y = ArrDelayMinutes)) +
+    geom_point() + 
+    geom_smooth(method = "lm", na.rm = TRUE)
+```
+
+
+## 2. Descriptive Statistical Analysis
+When you begin to analyze data, it’s important to first explore your data before you spend time building complicated models. One easy way to do so is to calculate some descriptive statistics for your data.
+
+Descriptive statistical analysis helps to describe basic features of a dataset and generates a short summary about the sample and measures of the data.
+
+Let's take a look at a couple of different useful methods. One way in which we can do this is by using the summarize() function in tidyverse:dplyr(). We introduced this method in previous modules. Method group_by() is often used together with summarize(), which summarizes each group into a single-row summary of that group. group_by() takes as arguments the column names that contain the categorical variables for which you want to calculate the summary statistics.
+
+
+```{r}
+summary_airline_delays <- sub_airline %>%
+  group_by(Reporting_Airline) %>%
+  summarize(count = n(), 
+            mean = mean(ArrDelayMinutes, na.rm = TRUE),
+            std_dev = sd(ArrDelayMinutes, na.rm = TRUE), 
+            min = min(ArrDelayMinutes, na.rm = TRUE), 
+            median = median(ArrDelayMinutes, na.rm=TRUE),
+            iqr = IQR(ArrDelayMinutes, na.rm = TRUE), 
+            max = max(ArrDelayMinutes, na.rm = TRUE))
+
+summary_airline_delays
+```
+
+
+To identify the data type of each column in a dataframe, we can use sapply() with typeof, which finds the type of something. So here, you apply typeof to every column in sub_airline.
+```{r}
+sapply(sub_airline, typeof)
+```
+
+
+### 2.1 Value Counts
+One way you can summarize the categorical data is by using the function count(). As an example, you can get the count of each reporting airline in this dataset. We see that we have 1096 flights from AA - American Airlines, 45 flights from AS - Alaska Airlines, 258 from B6 - jetBlue airlines, etc.
+```{r}
+sub_airline %>%
+  count(Reporting_Airline)
+```
+
+
+## 3. Basics of Grouping
+We often ask questions like: Is there any relationship between the reporting airline and the flight delays? If so, which day of the week do flights have relatively longer delay times? For example, people take flights most frequently on Monday and Friday for business trips. Would that impact how long the flight is delayed? It would be nice if we could group the data by the different reporting airline, and compare the results of these different day of week against each other.
+
+```{r}
+avg_delays <- sub_airline %>%
+  group_by(Reporting_Airline, DayOfWeek) %>%
+  summarize(mean_delays = mean(ArrDelayMinutes), .groups = 'keep')
+
+head(avg_delays)
+
+```
+
+```{r}
+# sort the dataframe in R using multiple variables with Dplyr
+sorted <- avg_delays %>% 
+    arrange(desc(mean_delays))
+
+head(sorted)
+```
+
+
+To make it easier to understand, we can transform this table to a heatmap.
+
+A heatmap has one variable displayed along the x-axis and the other variable displayed along the y-axis. A heat map (or heatmap) is a data visualization technique that shows magnitude of a phenomenon as color in two dimensions.
+
+The variation in color may be by hue or intensity, giving obvious visual cues to the reader about how the phenomenon is clustered or varied over space. It is a great way to plot the target variable over multiple variables and through this get visual clues of the relationship between these variables and the target.
+
+With ggplot, you can use geom_tile() to create heatmaps and use scale_fill_gradient() to change the coloring of the heatmap. So to interpret the heatmap below, the closer a tile is to the color red, the higher the mean arrival delay for that particualr day of the week and airline pair.
+
+```{r}
+# The color is still hard to see and identify,  let's change the color
+avg_delays %>% 
+  ggplot(aes(x = Reporting_Airline, 
+             y = DayOfWeek, 
+             fill = mean_delays)) +
+  # set the tile's borders to be white with size 0.2
+  geom_tile(color = "white", size = 0.2) +
+  # define gradient color scales
+  scale_fill_gradient(low = "yellow", high = "red")
+```
+
+
+### 3.1 BONUS Heatmap
+
+For something more sophisticated, you can always add more blocks in your code.
+
+```{r}
+# This visualization will use lubridate package
+library(lubridate)
+# Let's take a simple average across Reporting_Airline and DayOfWeek
+avg_delays <- sub_airline %>%
+  group_by(Reporting_Airline, DayOfWeek) %>%
+  summarize(mean_delays = mean(ArrDelayMinutes), .groups = 'keep') %>%
+  # create a new variable "bins" from mean_delays
+  # make the first range -0.1 to 0.1 to include zero values
+  mutate(bins = cut(mean_delays,breaks = c(-0.1,0.1,10,20,30,50, max(mean_delays)),
+                         labels = c("0","0-10","10-20","20-30","30-50",">50"))) %>%
+  mutate(bins = factor(as.character(bins),levels = rev(levels(bins))))
+
+
+ggplot(avg_delays, aes(x = Reporting_Airline, 
+                      y = lubridate::wday(DayOfWeek, label = TRUE), 
+                      fill = bins)) +
+    geom_tile(colour = "white", size = 0.2) +
+    geom_text(aes(label = round(mean_delays, 3))) +
+    guides(fill = guide_legend(title = "Delays Time Scale"))+
+    labs(x = "Reporting Airline",y = "Day of Week",title = "Average Arrival Delays")+
+    # Define color palette for the scale
+    scale_fill_manual(values = c("#d53e4f", "#f46d43", "#fdae61", "#fee08b", "#e6f598", "#abdda4"))
+```
+
+
+## 4. Correlation and Causation
+The main question we are trying to answer in this module is: "What causes flight delays?". To get a better measure of the important characteristics, we look at the correlation of these variables with the arrival delay, AKA, "ArrDelayMinutes", in other words: how is the arrival delay minutes dependent on this variable?
+
+First, let's begin with some important definitions:
+
+**Correlation:** a measure of the extent of interdependence between variables.
+
+**Causation:** the relationship between cause and effect between two variables.
+
+```{r}
+sub_airline %>% 
+  select(DepDelayMinutes, ArrDelayMinutes) %>% 
+  cor(method = "pearson")
+
+sub_airline %>% 
+  cor.test(~DepDelayMinutes + ArrDelayMinutes, data = .) 
+```
+
+### 4.1 Correlations between multiple variables
+To calculate correlations on multiple variables, you can select all the variable then use the cor() function but set use = "pairwise.complete.obs" so that the correlation of every pair of variables is calculated. This computes a matrix of Pearson's r correlation coefficients for all possible pairs of columns.
+
+```{r}
+correlation <- sub_airline %>%
+  select(ArrDelayMinutes, DepDelayMinutes, 
+         CarrierDelay, WeatherDelay, NASDelay, SecurityDelay, LateAircraftDelay) %>% 
+  cor(use = "pairwise.complete.obs", method = "pearson")
+
+correlation
+```
+
+
+```{r}
+numerics_airline <- sub_airline %>%
+  select(ArrDelayMinutes, DepDelayMinutes, CarrierDelay,
+         WeatherDelay, NASDelay, SecurityDelay, LateAircraftDelay)
+
+airlines_cor <- cor(numerics_airline, method = "pearson", use='pairwise.complete.obs')
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+corrplot(airlines_cor, method = "color", col = col(200),  
+         type = "upper", order = "hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col = "black", tl.srt = 45, #Text label color and rotation
+         )
+```
+
+
+## 5. ANOVA (Analysis of Variance)
+Let's say that we want to analyze a categorical variable and see the correlation among different categories. For example, consider the airline dataset, the question we may ask is, how do different categories of the reporting airline feature (as a categorical variable) impact flight delays?
+
+The bar graph below shows the average flight delays of different airlines. The code first groups the data by airline, then finds the average arrival delay for each airline, then it plots this as a bar chart.
+
+In geom_bar(), you should set stat = "identity" since you are passing in the y values ("Average_Delays"). If you left out this parameter then by default stat = "count", which would instead count the frequency of each airline.
+
+```{r}
+summary_airline_delays <- sub_airline %>%
+    group_by(Reporting_Airline) %>%
+    summarize(Average_Delays = mean(ArrDelayMinutes, na.rm = TRUE))
+
+summary_airline_delays %>%  
+    ggplot(aes(x = Reporting_Airline, y = Average_Delays)) + 
+    geom_bar(stat = "identity") +
+    ggtitle("Average Arrival Delays by Airline")
+```
+
+
+```{r}
+aa_as_subset <- sub_airline %>%
+  select(ArrDelay, Reporting_Airline) %>%
+  filter(Reporting_Airline == 'AA' | Reporting_Airline == 'AS')
+
+ad_aov <- aov(ArrDelay ~ Reporting_Airline, data = aa_as_subset)
+summary(ad_aov)
+```
+
+
+```{r}
+aa_pa_subset <- sub_airline %>%
+  select(ArrDelay, Reporting_Airline) %>%
+  filter(Reporting_Airline == 'AA' | Reporting_Airline == 'PA (1)')
+
+ad_aov <- aov(ArrDelay ~ Reporting_Airline, data = aa_pa_subset)
+summary(ad_aov)
+```
+
+
+## 6. Simple Linear Regression
+One example of a Data Model that we will be using is Simple Linear Regression.
+
+Simple Linear Regression is a method to help us understand the relationship between two variables:
+
+    - 𝑋 : The predictor/independent variable
+    - 𝑌 : The response/dependent variable (that we want to predict)
+    
+```{r}
+# Define dataset with just AA as the Reporting_Airline
+aa_delays <- sub_airline %>%
+  filter(CarrierDelay != "NA", Reporting_Airline == "AA")
+
+head(aa_delays)
+
+linear_model <- lm(ArrDelayMinutes ~ DepDelayMinutes, data = aa_delays)
+
+summary(linear_model)
+```
+
+
+We can output a prediction of three new data points.
+
+```{r}
+# Input data we use to predict
+new_depdelay <- data.frame(
+  DepDelayMinutes = c(12, 19, 24))
+
+# Predict the data points
+pred <- predict(linear_model, newdata = new_depdelay, interval = "confidence")
+pred
+
+linear_model$coefficients
+```
+
+
+## 7. Multiple Linear Regression
+What if we want to predict arrival delay minutes using more than one variable?
+
+If we want to use more variables in our model to predict arrival delay minutes, we can use Multiple Linear Regression. Multiple Linear Regression is very similar to Simple Linear Regression, but this method is used to explain the relationship between one continuous response (dependent) variable and two or more predictor (independent) variables. Most of the real-world regression models involve multiple predictors. We will illustrate the structure by using two predictor variables, but these results can generalize to any amount of predictor variables:
+
+   - 𝑌 : Response Variable
+   - 𝑋_1 : Predictor Variable 1
+   - 𝑋_2 : Predictor Variable 2
+
+```{r}
+mlr <- lm(ArrDelayMinutes ~ DepDelayMinutes + LateAircraftDelay, data = aa_delays)
+
+summary(mlr)
+```
+
+```{r}
+ggplot(aa_delays, aes(x = DepDelayMinutes, y = ArrDelayMinutes)) +
+  geom_point() + 
+  stat_smooth(method = "lm", col = "red")
+
+ggplot(aa_delays, aes(x = CarrierDelay, y = ArrDelayMinutes)) +
+  geom_point() + 
+  stat_smooth(method = "lm", col = "red")
+```
+
+```{r}
+cor(aa_delays$DepDelayMinutes, 
+    aa_delays$ArrDelayMinutes)
+cor(aa_delays$CarrierDelay, 
+    aa_delays$ArrDelayMinutes)
+```
+
+### 7.1 Residual Plot
+A good way to visualize the variance of the data is to use a residual plot. Before we start creating residual plots let's first answer the following questions:
+
+  * What is a **residual**?
+      - The difference between the observed value ( 𝑌 ) and the predicted value ( 𝑌̂  ) is called the residual (or error). When we look at a regression plot, the residual is the distance from the data point to the fitted regression line.
+
+  * What is a **residual plot**?
+      - A residual plot is a graph that shows the residuals on the vertical y-axis and the independent variable on the horizontal x-axis
+      .
+  * What do we pay attention to when looking at a residual plot?
+      - **Homoscedasticity**: If the residual plot is homoscedastic, then the points in the plot are **randomly spread out around the x-axis**, which means that a **linear model is appropriate** for the data. Why is that? Randomly spread out residuals means that the variance is constant, and thus the linear model is a good fit for this data.
+
+Now, let's look again at the regression plot of ArrDelayMinutes as the response and DepDelayMinutes as the predictor. This time, let's visualize the residuals on this plot.
+
+  * The red line is the regression line
+  * The black dots represent the observed values of ArrDelayMinutes
+  * The white dots are the predicted values from the linear regression model
+  * The light gray lines are the residuals, or errors. It shows how far away the observed values are from the predicted values. So a longer line means a larger error.
+
+```{r}
+aa_delays <- sub_airline %>%
+  filter(CarrierDelay != "NA", Reporting_Airline == "AA")
+score_model <- lm(ArrDelayMinutes ~ DepDelayMinutes, data = aa_delays)
+aa_delays$predicted <- predict(score_model)
+
+ggplot(aa_delays, aes(x = DepDelayMinutes, y = ArrDelayMinutes)) +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +  # Plot regression slope
+  geom_segment(aes(xend = DepDelayMinutes, yend = predicted), alpha = .2) +  # alpha to fade lines
+  geom_point() +
+  geom_point(aes(y = predicted), shape = 1) +
+  theme_bw()  # Add theme for cleaner look
+```
+
+
+We can see from this residual plot that the residuals are not randomly spread around the x-axis, which leads us to believe that maybe a non-linear model is more appropriate for this data.
+
+```{r}
+ggplot(lm(ArrDelayMinutes ~ DepDelayMinutes, data = aa_delays)) +
+  geom_point(aes(x=DepDelayMinutes, y=.resid))
+```
+
+
+### 7.2 Other Diagnostic Plots
+In addition to residual plots, there are other useful plots. A simple way to view diagnostic plots is to first create the linear model using lm(), then call base R's plot() function on the model.
+
+The below code will output four graphs:
+
+    -Reisudal plot:** Identical to the graph we made with ggplot, here it again shows that the residuals are not randomly spread around the x-axis.
+    
+    - **Q-Q plot:** The dotted diagonal line represents what normally distributed error (residual) values would follow. In this case, the residuals do not look normally distributed since there are many observations that fall above the line on the right side.
+    
+    - **Scale-location plot:* This plot helps check the homoscedasticity assumption. Here, it shows a red line that is not straight and validates the homoscedasticity assumption is not satisfied.
+    
+    - **Residuals vs leverage plot:** This helps determine **influential points**. Any points outside the dotted lines (Cook's distance) would make it influential. Here, none of the points cross the lines, however several points come close and could be removed or analyzed further.
+
+```{r}
+linear_model <- lm(ArrDelayMinutes ~ DepDelayMinutes, data = aa_delays)
+plot(linear_model)
+```
+
+
+
+## 8. Polynomial Regression
+Polynomial regression is a particular case of the general linear regression model or multiple linear regression models. That is, although the data is nonlinear in polynomial regression (the predicator variables have higher order terms), the model in all cases is linear. The model is always linear because it predicts the coefficients ( 𝑏_0,𝑏_1,... ) which are always of order 1.
+
+```{r}
+set.seed(20)
+x <- seq(from=0, to=20, by=0.1)
+
+# value to predict (y):
+y <- 500 + 0.4 * (x-10)^3
+
+# some noise is generated and added to the real signal (y):
+noise <- rnorm(length(x), mean=10, sd=80)
+noisy.y <- y + noise
+```
+
+
+In the graph below, we fit a first order linear model to this example dataset and can see that the model does not fit the data very well.
+```{r}
+# fit linear model
+ggplot(data=NULL,aes(x, noisy.y)) + 
+    geom_point() + 
+    geom_smooth(method = "lm")
+```
+
+
+Instead, we can use a polynomial model. It is similar to the first order linear model except that you include poly() within geom_smooth() to indicate what order polynomial to use. For example, using poly(x, 5) equates to having  𝑏_0+𝑏_1𝑋2+𝑏_2𝑋^2+𝑏_3𝑋^3+𝑏_4𝑋^4+𝑏_5𝑋^5.
+
+```{r}
+ggplot(data=NULL,aes(x, noisy.y)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", formula = y ~ poly(x, 5))
+```
+
+
+```{r}
+time <- 6:19
+temp <- c(4,6,7,9,10,11,11.5,12,12,11.5,11,10,9,8)
+
+ggplot(data = NULL, aes(time, temp)) + 
+    geom_point() 
+```
+
+```{r}
+polyfit2 <- lm(temp ~ poly(time, 2, raw = TRUE))
+
+summary(polyfit2)
+```
+
+```{r}
+ggplot(data = NULL, aes(time, temp)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", formula = y ~ poly(x, 2))
+```
+
+
+## 9. R-squared
+
+R squared, also known as the coefficient of determination, is a measure to indicate how close the data is to the fitted regression line. The value of the R-squared is the percentage of variation of the response variable (y) that is explained by a linear model.
+
+### 9.1 Mean Squared Error (MSE)
+        MSE=avg((𝑦_hat −𝑦)^2)
+        RMSE = sqrt(MSE)
+        
+The Mean Squared Error measures the average of the squares of errors, that is, the difference between actual value (y) and the estimated value (ŷ). Another metric that is related to MSE is root mean squared error (RMSE) and is simply the square root of MSE.
+
+```{r}
+linear_model <- lm(ArrDelayMinutes ~ DepDelayMinutes, aa_delays)
+
+mse <- mean(linear_model$residuals^2)
+mse
+
+rmse <- sqrt(mse)
+rmse
+
+summary(linear_model)$r.squared
+```
+
+```{r}
+mlr <- lm(ArrDelayMinutes ~ DepDelayMinutes + LateAircraftDelay, data = aa_delays)
+
+mse_mlr <- mean(mlr$residuals^2)
+mse_mlr
+
+rmse_mlr <- sqrt(mse_mlr)
+rmse_mlr
+
+summary(mlr)$r.squared
+```
+
+```{r}
+poly_reg <- lm(ArrDelayMinutes ~ poly(DepDelayMinutes, 3), data = aa_delays)
+
+mse_poly <- mean(poly_reg$residuals^2)
+mse_poly
+
+rmse_poly <- sqrt(mse)
+rmse_poly
+
+summary(poly_reg)$r.squared
+```
+
+
+
+
+# Model Evaluation and Refinement with Tidymodels
+We have built models and made predictions of flight delays. Now we will determine how accurate these predictions are.
+
+You will learn techniques for evaluating the performance of your models. This inludes how to split your dataset into training and testing sets, build and train linear regression models with a training set, compute metrics to assess the performance of models, and tune hyperparameters. Moreover, you’ll also learn a technique for handling cases with small datasets.
+
+
+
+## 1. Model Evaluation
+### 1.1 Training and Testing Data
+An important step in testing your model is to split your data into training and testing data. The training data will be used to train (fit) models, while the testing data will not be touched until we are evaluating the model.
+
+Before splitting the data we:
+
+    * Use the principles learned in module 2 and use replace_na() to replace the NAs in the variables we are using to predict. Here, we choose to replace the values with 0 because having NA in these variables mean that there was no delay.
+    * Use select() to only include the variables we will use to create a final model.
+
+```{r}
+flight_delays <- sub_airline %>% 
+    replace_na(list(CarrierDelay = 0,
+                    WeatherDelay = 0,
+                    NASDelay = 0,
+                    SecurityDelay = 0,
+                    LateAircraftDelay = 0)) %>%
+    select(c(ArrDelayMinutes, DepDelayMinutes, CarrierDelay, WeatherDelay, NASDelay, SecurityDelay, LateAircraftDelay, DayOfWeek, Month))
+```
+
+
+Now, with the prepared dataset flight_delays, you can split the data. A random seed is set so that the way the data is split will be the same every time this code is run, this helps create reproducible results.
+
+```{r}
+set.seed(1234)
+flight_split <- initial_split(flight_delays)
+train_data <- training(flight_split)
+test_data <- testing(flight_split)
+```
+
+In initial_split(), you can also set the prop parameter to set the proportion of the data to use for training. If it is unspecified like here in the example, then by default it is set to 0.75. This means that the proportion of data that is split into the training data is 75% (so the testing data is 25%).
+
+
+### 1.2 Training a Model
+After splitting the dataset, the next step is to create a Linear Regression object by using linear_reg() to specify linear regression and set_engine() to specify which package is used to create the model.
+
+```{r}
+# Pick linear regression
+lm_spec <- linear_reg() %>%
+  # Set engine
+  set_engine(engine = "lm")
+
+# Print the linear function
+lm_spec
+```
+
+In this example, we will use Arrival Delay Minutes ("ArrDelayMinutes") as the response variable and Departure Delay Minutes ("DepDelayMinutes") as the predictor variable to fit (train) a model. We will use train_data because we are training the model. The test_data will be used later.
+
+Use fit() to fit the model we just specified in lm_spec. The output is the fitted (trained) model.
+
+```{r}
+train_fit <- lm_spec %>% 
+    fit(ArrDelayMinutes ~ DepDelayMinutes, data = train_data)
+
+train_fit
+```
+
+To look at some of the predictions of the fitted model, use predict(), which will output one column with predictions (.pred). Here, since new_data = train_data, you are looking at how well the model is predicting the original training data.
+
+```{r}
+train_results <- train_fit %>%
+  # Make the predictions and save the predicted values
+  predict(new_data = train_data) %>%
+  # Create a new column to save the true values
+  mutate(truth = train_data$ArrDelayMinutes)
+
+head(train_results)
+```
+
+
+Additionally, you can use the same fitted model to predict on test data and save to a dataset called test_results. There are two columns in the dataset, including both predicted values and true values.
+
+Now it is time to evaluate the models to estimate how well the models perform on new data, the test data. This example uses the same model in train_fit to make the predictions. Again, from predict(), the output is stored in a data frame with only one column, called .pred. You can then add a new column to this data frame using the mutate() function. This new column is named truth and contains values of "ArrDelayMinutes" from the test_data. In the end, you will have a dataframe with the predictions and the true values.
+
+```{r}
+test_results <- train_fit %>%
+  # Make the predictions and save the predicted values
+  predict(new_data = test_data) %>%
+  # Create a new column to save the true values
+  mutate(truth = test_data$ArrDelayMinutes)
+
+head(test_results)
+```
+
+
+### 1.3 Evaluating the Model
+Next, let's evaluate the model. Using metrics learned in previous lessons like RMSE or R 2  are good ways to evaluate regression models.
+
+In previous lessons you learned how to claculate RMSE with combinations of functions like mean() and sqrt(), which is a good exercise. However in practice, this may not be ideal. So more conveniently with "tidymodels", there are already functions like rmse() as well as many other metric functions 
+
+```{r}
+rmse(train_results, truth = truth, estimate = .pred)
+
+rmse(test_results, truth = truth, estimate = .pred)
+
+rsq(train_results, truth = truth, estimate = .pred)
+
+rsq(test_results, truth = truth, estimate = .pred)
+```
+
+
+You can also make a plot to visualize how well you predicted the Arrival Delay Minutes.
+
+```{r}
+test_results %>%
+  mutate(train = "testing") %>%
+  bind_rows(train_results %>% mutate(train = "training")) %>%
+  ggplot(aes(truth, .pred)) +
+  geom_abline(lty = 2, color = "orange", 
+              size = 1.5) +
+  geom_point(color = '#006EA1', 
+             alpha = 0.5) +
+  facet_wrap(~train) +
+  labs(x = "Truth", 
+       y = "Predicted Arrival Delays (min)")
+```
+
+### 1.4 Cross validation
+One of the most common “out-of-sample” evaluation techniques is cross validation.
+
+Cross validation is an effective use of data because each observation is used for both training and testing. In cross validation,
+
+    1. First, the dataset is split into k-equal groups; each group is referred to as a fold.
+    2. k - 1 of the folds are used to train a model, and the remaining fold is used to test with an evaluation metric.
+    3. This is repeated until each of the k groups is used as the test set.
+    4. After all folds are used, there are k evaluation metric results. They are averaged to get an estimate of out-of-sample error
+
+For example, in 4-fold cross validation you would use three folds for training and then use one fold for testing. The same model would be trained and then tested 4 times using an evaluation metric. The evaluation metric that you use depends on the model, we will use RMSE and R-squared in our code example.
+
+**Why is it worth the effort to perform cross validation?**
+Using cross validation means that a model is trained and evaluated many (k) times, however it is still worth the computational cost because it is used to test the generalizability of the model. Generalizability is a measure of how useful the results of a study are for a broader group of people and situations. As you train a model on the training set, it tends to overfit most of the time. To avoid this situation, you can use regularization techniques. Cross validation provides a check on how the model is performing on a test data (new unseen data), and since you have limited training instances, you need to be careful while reducing the amount of training samples and reserving it for testing purposes.
+
+Moreover, cross validation still works well with a **small amount** of data. For example, assume that you only have 100 samples. If you do a train test with an 80 to 20 percent split, then you only have 20 samples in the test set, which is too small to generalize reliable results. With cross validation, you can have as many as k-folds, so you can build k different models. In this case, you can make predictions on all your data and then average out the model performance.
+
+```{r}
+set.seed(1234)
+cv_folds <- vfold_cv(train_data, v = 10)
+results <- fit_resamples(lm_spec, 
+                         ArrDelayMinutes ~ DepDelayMinutes,
+                         resamples = cv_folds)
+
+results %>% collect_metrics()
+```
+
+
+## 2. Overfitting, Underfitting and Model Selection
+It turns out that the test data sometimes referred to as the out of sample data is a much better measure of how well your model performs in the real world. One reason is underfitting. A model that is underfit will have high training and high testing error.
+
+How to prevent underfitting?
+    - Increase the model complexity
+    - Add more features to the training data
+    - Try different models
+
+Let's go over an example of underfitting using a simple dataset included with R called "cars". We will predict the distance (dist) it takes for cars to stop using the car's speed (speed).
+
+In this first example model, the model is defined a line set to the mean of the car's stopping distance. Based on the plot, this model is underfitting because of the speeds less than 10 and greater than 20 are very far from the prediction line.
+
+```{r}
+ggplot(cars, aes(x = speed, y = dist)) + 
+    geom_point() + 
+    geom_hline(yintercept = mean(cars$dist), 
+               col = "red") 
+```
+
+Another reason that using the test data to measure the performance of the model is because of overfitting. These differences are more apparent in Multiple Linear Regression and Polynomial Regression so we will explore overfitting in that context.
+
+How to prevent overfitting?
+    - Reduce model complexity
+    - Training with more data
+    - Cross-validation
+    - Regularization
+    
+Let's take a look at an example. We use 8th degree polynomial here with poly(x, 8) to fit the "car" dataset.
+
+```{r}
+ggplot(cars, aes(x = speed, y = dist)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", 
+                formula = y ~ poly(x, 8), 
+                col = "red", se = FALSE) 
+```
+
+The model is fitting to the points in the top right. If this model received new speeds, it may not be able to predict accurate distances.
+
+Going back to the example with the "cars" dataset, you can reduce the complexity of the model. In the previous overfitting example, a polynomial model of 8 degrees was used. Instead, you can use a polynomial of degree 1 or a simple linear regression model. In R, you can set the formula to y over x. In this example, we demonstrated how you can prevent overfitting and underfitting models by changing the model complexity.
+
+```{r}
+ggplot(cars, aes(x = speed, y = dist)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", 
+                formula = y ~ x, 
+                col = "red", 
+                se = FALSE) 
+```
+
+
+## 3. Regularization
+Regularization is a way to handle the problem of overfitting. It is a technique you can use to reduce the complexity of the model by adding a penalty on the different parameters of the model. After it is applied, the model will be less likely to fit the noise of the training data and will improve the generalization abilities of the model. So, regularization is a way of avoiding overfitting by restricting the magnitude of model coefficients.
+
+There are a few methods of regularizing linear models including
+
+    * Ridge (L2) regularization
+    * Lasso (L1) regularization
+    * Elastic net (mix of L1 and L2) regularization
+
+### 3.1 Ridge (L2) regularization
+First, create a recipe() that includes the model formula. You could preprocess the data more in this step, but the data here is already preprocessed. The dot . in the formula is a special character that tells R to use all the variables in train_data.
+
+```{r message=FALSE}
+flight_recipe <-
+  recipe(ArrDelayMinutes ~ ., data = train_data)
+```
+
+Next, use the linear_reg() function from the tidymodels library to specify the model.
+
+“penalty” is the value of lambda. ”mixture” is the proportion of L1 penalty. For ridge regression, specify mixture = 0. This means there is no L1 penalty and only the L2 penalty is used. For lasso regression, you would use mixture = 1.
+
+```{r message=FALSE}
+ridge_spec <- linear_reg(penalty = 0.1, mixture = 0) %>%
+  set_engine("glmnet")
+
+ridge_wf <- workflow() %>%
+  add_recipe(flight_recipe)
+```
+
+
+Finally, add the ridge model and fit the model.
+```{r message=FALSE}
+ridge_fit <- ridge_wf %>%
+  add_model(ridge_spec) %>%
+  fit(data = train_data)
+```
+
+To view the result of the fitted ridge regression model, use the pull_workflow_fit() function.
+```{r message=FALSE}
+ridge_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+
+There are two results columns. The estimate column contains the estimates of the coefficients learned by the model. Penalty contains the value of lambda, which in this example is 0.1.
+
+
+### 3.2 Lasso (L1) regularization
+Similarly, here is the code for lasso regression.
+
+```{r}
+lasso_spec <- linear_reg(penalty = 0.1, mixture = 1) %>%
+  set_engine("glmnet")
+
+lasso_wf <- workflow() %>%
+  add_recipe(flight_recipe)
+
+lasso_fit <- lasso_wf %>%
+  add_model(lasso_spec) %>%
+  fit(data = train_data)
+
+lasso_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+
+
+
+### 3.3 Elastic Net (L1 and L2) Regularization
+Moreover, here is the code for elastic net regularization. Like mentioned before, mixture is the proportion of L1 penalty used. Since elastic net uses a combination of L1 and L2 regularization, then when mixture is set to a value between 0 and 1 (not including 0 and 1) then it is considered elastic net regularization. In this example, it uses less L1 penalty than L2.
+
+```{r}
+elasticnet_spec <- linear_reg(penalty = 0.1, mixture = 0.3) %>%
+  set_engine("glmnet")
+
+elasticnet_wf <- workflow() %>%
+  add_recipe(flight_recipe)
+  
+elasticnet_fit <- elasticnet_wf %>%
+  add_model(elasticnet_spec) %>%
+  fit(data = train_data)
+
+elasticnet_fit  %>%
+  pull_workflow_fit() %>%
+  tidy() 
+```
+
+
+Perform elastic net regression with "mixture = 0.5" and "penalty = 0.2" using all features (variables) in the training data, and then output the result of the fitted regression model.
+```{r}
+flight_recipe <-
+  recipe(ArrDelayMinutes ~ ., data = train_data)
+
+el_spec <- linear_reg(penalty = 0.5, mixture = 0.2) %>%
+  set_engine("glmnet")
+
+el_wf <- workflow() %>%
+  add_recipe(flight_recipe)
+
+el_fit <- el_wf %>%
+  add_model(el_spec) %>%
+  fit(data = train_data)
+
+el_fit %>%
+  pull_workflow_fit() %>%
+  tidy()
+```
+
+
+### 3.4 Comparing Regularization Types
+Now that you know more about regularization, it is also good to understand when you would use a techinque over the other.
+
+**Lasso (L1):**
+
+  * Pros: Lasso is primarily used for variable selection, that is, reducing the number of variables/features used in a model by shrinking the coefficients to zero. You would use this if you have many variables and think just a select few would will be useful in a final model.
+  * Cons: The downside of Lasso is that its variable selection is unstable, as in, for correlated variables it will arbitrarily select one. Additionally, if the number of data point (n) is less than the number of features (p), then Lasso can select at most n of the features.
+
+**Ridge (L2):**
+  * Pros: If you don’t want to reduce the number of variables, you can use this. Ridge also works well when there is multicollinearity in the features because it reduces the variance while increasing bias.
+  * Cons: Will not reduce the number of variables if that is your goal. Also, the bias in the model may be high.
+
+**Elastic net (L1/L2):**
+  * Pros: Elastic net combines the benefits of Lasso and Ridge. It solves some of the issues that Lasso has when doing variable selection because it works well when the variables are highly correlated and it can work when the number of variables is greater than the number of samples.
+  * Cons: May be computationally more expensive than Lasso or Ridge because it computes both L1 and L2 penalties.
+
+
+## 4. Grid Search
+The goal of grid search is to find the values of the hyperparameters that results in the best model. This is known as tuning hyperparameters. Hyperparameters are parameters that are not derived from training the model. For example: 𝜆 (or lambda) in ridge/lasso is a hyperparameter.
+
+Grid search takes a list of values for each hyperparameter it is tuning and iterates through each combination. It then uses every combination of parameters to produce a model. For each model, a metric like RMSE is calculated. You then determine the best value of the hyperparameters by choosing the model with the best RMSE. In R, you can use functions in tidymodels to run grid search.
+
+First, define the lasso model. In this example, we will be tuning a lasso model so mixture = 1. We will tune lambda, which is penalty in the function.
+
+```{r}
+tune_spec <- linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+
+lasso_wf <- workflow() %>%
+  add_recipe(flight_recipe)
+```
+
+Next, define cross validation to resample the data:
+```{r}
+flight_cvfolds <- vfold_cv(train_data)
+```
+
+Now, you can set up the grid using grid_regular(). The levels are how many values to use and in penalty() you can specify the range of values to use. By default, the range values are inverse log transformed. This means that  −3  is really  10^−3  and  0.3  is really  100^0.3 .
+```{r}
+lambda_grid <- grid_regular(levels = 50,
+  penalty(range = c(-3, 0.3)))
+```
+
+To tune the grid, use tune_grid() and include the lambda grid just specified.
+```{r}
+lasso_grid <- tune_grid(
+    lasso_wf %>% add_model(tune_spec), 
+    resamples = flight_cvfolds, 
+    grid = lambda_grid)
+```
+
+Finally, to view best results:
+```{r}
+show_best(lasso_grid, metric = "rmse")
+```
+
+From the table and using RMSE as the metric, using lambda (penalty) equal to 1.46 gives the best result.
+
+Additionally, to visualize the RMSE results:
+```{r}
+lasso_grid %>%
+  collect_metrics() %>%
+  filter(.metric == "rmse") %>%
+  ggplot(aes(penalty, mean)) +
+  geom_line(size=1, color="red") +
+  scale_x_log10() +
+  ggtitle("RMSE")
+```
+The dip in the RMSE graph corresponds to the best value for lambda. So again, we see that using lambda (penalty) of about 1.46 gives the best result.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
